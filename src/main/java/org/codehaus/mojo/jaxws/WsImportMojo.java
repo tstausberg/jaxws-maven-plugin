@@ -44,6 +44,8 @@ import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -54,6 +56,7 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.Parameter;
@@ -61,7 +64,7 @@ import org.apache.maven.settings.Proxy;
 import org.apache.maven.settings.Settings;
 
 /**
- * 
+ *
  * @author gnodet (gnodet@apache.org)
  * @author dantran (dantran@apache.org)
  */
@@ -80,7 +83,7 @@ abstract class WsImportMojo
     private String packageName;
 
     /**
-     * Catalog file to resolve external entity references support TR9401, 
+     * Catalog file to resolve external entity references support TR9401,
      * XCatalog, and OASIS XML Catalog format.
      */
     @Parameter
@@ -126,7 +129,7 @@ abstract class WsImportMojo
 
     /**
      * &#64;WebService.wsdlLocation and &#64;WebServiceClient.wsdlLocation value.
-     * 
+     *
      * <p>
      * Can end with asterisk in which case relative path of the WSDL will
      * be appended to the given <code>wsdlLocation</code>.
@@ -285,7 +288,7 @@ abstract class WsImportMojo
             if ( wsdls.length == 0 && ( wsdlUrls == null || wsdlUrls.isEmpty() ) )
             {
                 getLog().info( "No WSDLs are found to process, Specify at least one of the following parameters: "
-                        + "wsdlFiles, wsdlDirectory or wsdlUrls." );
+                    + "wsdlFiles, wsdlDirectory or wsdlUrls." );
                 return;
             }
             this.processWsdlViaUrls();
@@ -372,7 +375,7 @@ abstract class WsImportMojo
     /**
      * Returns wsimport's command arguments as a list
      */
-    private ArrayList<String> getWsImportArgs( String relativePath )
+    private ArrayList<String> getWsImportArgs( String relativePath  )
         throws MojoExecutionException
     {
         ArrayList<String> args = new ArrayList<>();
@@ -399,8 +402,20 @@ abstract class WsImportMojo
 
         if ( packageName != null )
         {
+            String newPackageName = packageName;
+            if ( (packageName.endsWith("**")) && (relativePath != null) )
+            {
+                final String startPackageName = newPackageName.substring(0, newPackageName.length()-2);
+                newPackageName = generateNewPackageName(startPackageName, relativePath);
+
+            } else if ( (packageName.endsWith("**")) && (relativePath == null) )
+            {
+                newPackageName = packageName.substring(0, packageName.lastIndexOf(".**"))
+                    .substring(0, packageName.lastIndexOf("**"));
+            }
+
             args.add( "-p" );
-            args.add( packageName );
+            args.add( newPackageName );
         }
 
         if ( catalog != null )
@@ -527,7 +542,7 @@ abstract class WsImportMojo
 
     /**
      * Returns a file array of xml files to translate to object models.
-     * 
+     *
      * @return An array of schema files to be parsed by the schema compiler.
      */
     public final File[] getBindingFiles()
@@ -562,7 +577,7 @@ abstract class WsImportMojo
 
     /**
      * Returns an array of wsdl files to translate to object models.
-     * 
+     *
      * @return An array of schema files to be parsed by the schema compiler.
      */
     private URL[] getWSDLFiles()
@@ -584,7 +599,7 @@ abstract class WsImportMojo
                 throw new MojoExecutionException( "Error while retrieving list of WSDL files to process", e );
             }
         }
-        
+
         try ( URLClassLoader loader = new URLClassLoader( urlCpath.toArray( new URL[0] ) ) )
         {
             if ( wsdlFiles != null )
@@ -634,6 +649,15 @@ abstract class WsImportMojo
                         files.add( wsdl.toURI().toURL() );
                     }
                 }
+                else if ( wsdlDirectory.toString().endsWith("**") )
+                {
+                    String rootPath = wsdlDirectory.toString();
+                    List<Path> wsdls = listFilesRecursivly(new File(rootPath.substring(0,rootPath.length()-2)));
+                    for ( Path wsdl : wsdls )
+                    {
+                        files.add( wsdl.toUri().toURL() );
+                    }
+                }
                 else
                 {
                     URI rel = project.getBasedir().toURI().relativize( wsdlDirectory.toURI() );
@@ -653,7 +677,7 @@ abstract class WsImportMojo
                     {
                         String path = u.getPath();
                         Pattern p = Pattern.compile( dir.replace( File.separatorChar, '/' ) + PATTERN,
-                                                     Pattern.CASE_INSENSITIVE );
+                            Pattern.CASE_INSENSITIVE );
                         try ( JarFile jarFile = new JarFile( path.substring( 5, path.indexOf( "!/" ) ) ) )
                         {
                             Enumeration<JarEntry> jes = jarFile.entries();
@@ -711,24 +735,28 @@ abstract class WsImportMojo
                 }
             }
         }
+        else if ( wsdlDirectory.toString().endsWith("**") )
+        {
+            int wsdlDirLength = wsdlDirectory.toString().length() -2;
+            return f.getPath().replace(File.separatorChar, '/').substring(wsdlDirLength);
+        }
         else if ( wsdlDirectory != null && wsdlDirectory.exists() )
         {
-            File[] wsdls = wsdlDirectory.listFiles( WSDL_FILE_FILTER );
-            for ( File wsdl : wsdls )
-            {
-                String path = f.getPath().replace( File.separatorChar, '/' );
-                if ( path.endsWith( wsdl.getName() ) )
-                {
+            File[] wsdls = wsdlDirectory.listFiles(WSDL_FILE_FILTER);
+            for (File wsdl : wsdls) {
+                String path = f.getPath().replace(File.separatorChar, '/');
+                if (path.endsWith(wsdl.getName())) {
                     return wsdl.getName();
                 }
             }
         }
+
         return null;
     }
 
     /**
      * Returns true if given WSDL resource or any binding file is newer than the <code>staleFlag</code> file.
-     * 
+     *
      * @return True if wsdl files have been modified since the last build.
      */
     private boolean isOutputStale( String resource )
@@ -828,6 +856,48 @@ abstract class WsImportMojo
         // fallback to some default
         getLog().warn( "Could not compute hash for " + s + ". Using fallback method." );
         return s.substring( s.lastIndexOf( '/' ) ).replaceAll( "\\.", "-" );
+    }
+
+    /**
+     * @return List of all Path's recursivly started at rootPath filtered by WSDL_FILE_FILTER
+     */
+    private List<Path> listFilesRecursivly(final File rootPath) throws MojoExecutionException {
+        try {
+            return Files.walk(rootPath.toPath())
+                .filter(Files::isRegularFile)
+                .filter(f -> f.toString().toLowerCase().endsWith( ".wsdl" ))
+                .collect(Collectors.toList());
+        } catch (Exception e) {
+            throw new MojoExecutionException("Error while retrieving list of WSDL files to process", e);
+        }
+    }
+
+    /**
+     * @return new packagename with additional parts from relativePath
+     */
+    private String generateNewPackageName(final String startPackageName, final String relativePath)
+    {
+        String packageNamePostFix = "";
+        if ( relativePath != null ) {
+            packageNamePostFix = relativePath.substring(0, relativePath.lastIndexOf('/'));
+            packageNamePostFix = packageNamePostFix.replace('/', '.');
+        }
+        String[] packageParts = startPackageName.concat(packageNamePostFix).replace("..",".").split("\\.");
+        String packageNameReturn  = "";
+        for (int i = 0; i < packageParts.length; i++) {
+            if (packageParts[i] != null) {
+                if (packageParts[i].matches("[0-9].*") ) {
+                    packageParts[i] = "_" + packageParts[i];
+                }
+                if (i == 0) {
+                    packageNameReturn = packageParts[i];
+                } else {
+                    packageNameReturn = packageNameReturn + "." + packageParts[i];
+                }
+            }
+        }
+
+        return packageNameReturn;
     }
 
     /**
